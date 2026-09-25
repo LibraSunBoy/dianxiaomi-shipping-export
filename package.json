@@ -1,0 +1,30 @@
+{
+  "name": "dianxiaomi-shipping-export",
+  "description": "店小秘发货成功列表导出插件：按日期范围导出为 Excel",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wxt build -m development && node scripts/check-build.mjs",
+    "build": "wxt build && node scripts/check-build.mjs",
+    "check": "node scripts/check-build.mjs",
+    "dev:firefox": "wxt build -m development -b firefox",
+    "build:firefox": "wxt build -b firefox",
+    "zip": "wxt zip",
+    "zip:firefox": "wxt zip -b firefox",
+    "compile": "vue-tsc --noEmit",
+    "postinstall": "wxt prepare"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "vue": "^3.5.29"
+  },
+  "devDependencies": {
+    "@wxt-dev/module-vue": "^1.0.3",
+    "typescript": "^5.9.3",
+    "vite": "^8.1.5",
+    "vue-tsc": "^3.2.5",
+    "web-ext": "^10.5.0",
+    "wxt": "^0.21.3"
+  }
+}

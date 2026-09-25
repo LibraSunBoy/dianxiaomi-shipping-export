@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>店小秘 - 发货成功列表（账号区在 iframe 内）</title>
+<style>
+  body { margin: 0; font-family: "Microsoft YaHei", sans-serif; background: #f5f6f8; }
+  #hdr-slot iframe { display: block; width: 100%; height: 52px; border: 0; }
+  table { border-collapse: collapse; width: 100%; background: #fff; }
+  th, td { border: 1px solid #e3e6eb; padding: 8px; font-size: 12px; text-align: left; vertical-align: top; }
+  th { background: #f7f8fa; font-weight: 600; }
+  .img-css { width: 100px; height: 100px; object-fit: contain; display: block; margin-bottom: 4px; }
+  .wrap { padding: 12px; }
+</style>
+</head>
+<body class="order-layout-active">
+
+<!-- 顶部账号区被放进【同源 iframe】：content script 只注入主框架，
+     如果不主动遍历同源 iframe 的 contentDocument，账号名永远读不到。 -->
+<div id="app">
+  <div class="in-body order-layout">
+    <div id="hdr-slot"></div>
+
+    <div class="wrap">
+  <table class="vxe-table--header">
+    <thead>
+      <tr>
+        <th colid="col_1"></th>
+        <th colid="col_12">商品信息</th>
+        <th colid="col_13">物流方式</th>
+        <th colid="col_15">时间</th>
+      </tr>
+    </thead>
+  </table>
+  <table class="vxe-table--body">
+    <tbody>
+      <tr class="vxe-body--row">
+        <td colid="col_1"><input type="checkbox"></td>
+        <td colid="col_12">
+          <img class="img-css" src="https://ecx.images-amazon.com/images/I/81q+Af25mUL._SL100.jpg" referrerpolicy="no-referrer">
+          <span>! 6W-W7WR-L9I5 x 1 USD 49.99 color ：Purple size ：2' x 6'</span>
+        </td>
+        <td colid="col_13">USPS 「YT2626700708781963」</td>
+        <td colid="col_15">下单： 2026-09-24 06:09 审核： 2026-09-24 07:00 发货： 2026-09-25 00:20 送达： 2026-10-21 14:59</td>
+      </tr>
+      <tr class="vxe-body--row">
+        <td colid="col_1"><input type="checkbox"></td>
+        <td colid="col_12">
+          <img class="img-css" src="https://ecx.images-amazon.com/images/I/71FJMPmO5eL._SL100.jpg" referrerpolicy="no-referrer">
+          <span>! 0L-VJC9-X3H4 x 1 USD 39.99 color ：Blue size ：3' x 5'</span>
+        </td>
+        <td colid="col_13">USPS 「YT2626700708781977」</td>
+        <td colid="col_15">下单： 2026-09-23 08:10 审核： 2026-09-23 09:00 发货： 2026-09-24 18:30 送达： 2026-10-20 11:00</td>
+      </tr>
+    </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+  // 模拟异步：2.5 秒后才把 header iframe 插进来（iframe 自身加载还需要一点时间）
+  setTimeout(function () {
+    var f = document.createElement('iframe');
+    f.src = '/frame-header';
+    document.getElementById('hdr-slot').appendChild(f);
+  }, 2500);
+</script>
+</body>
+</html>

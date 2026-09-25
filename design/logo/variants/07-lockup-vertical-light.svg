@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 431.2" width="920" height="431.2"><rect width="920" height="431.2" fill="#FFFFFF"/>
+  <g transform="translate(360,56) scale(0.1953125)"><defs><clipPath id="lv"><rect width="1024" height="1024" rx="224"/></clipPath></defs>
+   <g clip-path="url(#lv)"><rect width="1024" height="1024" fill="#2B6CFF"/></g><g fill="none" stroke="#FFFFFF" stroke-width="128" stroke-linecap="round" stroke-linejoin="round"><path d="M512 240 V784"/><path d="M240 304 V784"/><path d="M784 304 V784"/>
+    <path d="M240 464 H784"/><path d="M240 624 H784"/></g></g>
+  <text x="460" y="371.68" text-anchor="middle" font-family="'PingFang SC','Microsoft YaHei','Source Han Sans SC','Noto Sans SC',sans-serif" font-size="88" font-weight="700" letter-spacing="1.76" fill="#12203B">店小秘发货导出助手</text>
+  
+</svg>

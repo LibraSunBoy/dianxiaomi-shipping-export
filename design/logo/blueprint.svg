@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-300 -300 1960 1680" width="1960" height="1680" role="img" aria-label="出格 图标数学标注图">
+  <title>出格 · 数学标注图 (blueprint)</title>
+  <!-- 几何真源：logo-master.svg。本图只做标注，不改几何。 -->
+  <style>
+    .dim{stroke:#B45309;stroke-width:2;fill:none}
+    .dimT{font:600 26px 'Cascadia Mono',Consolas,monospace;fill:#B45309}
+    .ink{font:700 36px 'PingFang SC','Microsoft YaHei',sans-serif;fill:#12203B}
+    .sub{font:400 24px 'PingFang SC','Microsoft YaHei',sans-serif;fill:#6B7A93}
+    .mono{font:500 24px 'Cascadia Mono',Consolas,monospace;fill:#44546B}
+    .grid{fill:none;stroke:#DCE4F0;stroke-width:1}
+    .axis{fill:none;stroke:#9DB0CC;stroke-width:1.5;stroke-dasharray:6 6}
+  </style>
+
+  <rect x="-300" y="-300" width="1960" height="1680" fill="#FFFFFF"/>
+
+  <!-- 8px 模数网格（每 128 = 16M 一根，避免过密） -->
+  <g class="grid">
+    <path d="M0 0H1024M128 0V1024M256 0V1024M384 0V1024M512 0V1024M640 0V1024M768 0V1024M896 0V1024"/>
+    <path d="M0 128H1024M0 256H1024M0 384H1024M0 512H1024M0 640H1024M0 768H1024M0 896H1024"/>
+  </g>
+
+  <!-- 底板轮廓 -->
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="#2B6CFF" opacity="0.10"/>
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="none" stroke="#C7D3E6" stroke-width="2"/>
+
+  <!-- 字形（弱化显示） -->
+  <g fill="none" stroke="#2B6CFF" stroke-width="128" stroke-linecap="round" stroke-linejoin="round" opacity="0.22">
+    <path d="M512 240 V784"/><path d="M240 304 V784"/><path d="M784 304 V784"/>
+    <path d="M240 464 H784"/><path d="M240 624 H784"/>
+  </g>
+
+  <!-- 中心线（几何骨架） -->
+  <g class="axis">
+    <path d="M512 240V784M240 304V784M784 304V784M240 464H784M240 624H784"/>
+    <path d="M176 176H848V848H176Z"/>
+  </g>
+
+  <!-- 视觉外框 176 → 848 -->
+  <rect x="176" y="176" width="672" height="672" fill="none" stroke="#2B6CFF" stroke-width="3" stroke-dasharray="14 8"/>
+
+  <!-- 上：水平留白 / 外框 -->
+  <g class="dim">
+    <path d="M0 -130H176M848 -130H1024M176 -130H848"/>
+    <path d="M0 -140V-120M176 -140V-120M848 -140V-120M1024 -140V-120"/>
+    <path d="M0 -130V0M1024 -130V0"/>
+  </g>
+  <text class="dimT" x="52" y="-146">176</text>
+  <text class="dimT" x="874" y="-146">176</text>
+  <text class="dimT" x="392" y="-146">672　字形视觉外框</text>
+
+  <!-- 左：竖向留白 -->
+  <g class="dim">
+    <path d="M-120 0V176M-120 848V1024M-120 176V848"/>
+    <path d="M-130 0H-110M-130 176H-110M-130 848H-110M-130 1024H-110"/>
+    <path d="M-120 0H0M-120 1024H0"/>
+  </g>
+  <text class="dimT" x="-286" y="104">176</text>
+  <text class="dimT" x="-286" y="952">176</text>
+  <text class="dimT" x="-286" y="516">672</text>
+
+  <!-- 下：竖栏间距 272 -->
+  <g class="dim">
+    <path d="M240 1112H512M512 1112H784"/>
+    <path d="M240 1102V1122M512 1102V1122M784 1102V1122"/>
+    <path d="M240 1024V1112M512 1024V1112M784 1024V1112"/>
+  </g>
+  <text class="dimT" x="330" y="1148">272</text>
+  <text class="dimT" x="602" y="1148">272</text>
+  <text class="mono" x="240" y="1196">竖栏心 x = 240 / 512 / 784　（间距 272 = 34M）</text>
+
+  <!-- 右：横档三等分 160 -->
+  <g class="dim">
+    <path d="M1112 304V464M1112 464V624M1112 624V784"/>
+    <path d="M1102 304H1122M1102 464H1122M1102 624H1122M1102 784H1122"/>
+    <path d="M1024 304H1112M1024 464H1112M1024 624H1112M1024 784H1112"/>
+  </g>
+  <text class="dimT" x="1132" y="392">160</text>
+  <text class="dimT" x="1132" y="552">160</text>
+  <text class="dimT" x="1132" y="712">160</text>
+  <text class="mono" x="1132" y="252">竖栏 304 → 784 = 480</text>
+  <text class="mono" x="1132" y="286">三等分 → 档 y = 464 / 624</text>
+
+  <!-- 中栏上探 64 -->
+  <g class="dim">
+    <path d="M-46 240V304"/>
+    <path d="M-70 240H-22M-70 304H-22"/>
+    <path d="M-46 240H0M-46 304H0" stroke-dasharray="0"/>
+  </g>
+  <text class="dimT" x="-286" y="272">64</text>
+  <text class="mono" x="-286" y="314">中栏上探</text>
+
+  <!-- 笔宽 SW -->
+  <g class="dim">
+    <path d="M448 700H576"/>
+    <path d="M448 688V712M576 688V712"/>
+  </g>
+  <text class="dimT" x="404" y="664">SW 128</text>
+
+  <!-- 圆角端帽 -->
+  <circle cx="784" cy="784" r="64" fill="none" stroke="#B45309" stroke-width="2" stroke-dasharray="8 6"/>
+  <text class="mono" x="176" y="906">横档端帽抵达 176 / 848 → 与竖栏外缘相切，端头不外凸</text>
+  <text class="mono" x="176" y="944">端帽 r = SW/2 = 64（全圆角，无直角）</text>
+
+  <!-- 标题 -->
+  <text class="ink" x="-300" y="-238">出格 · Chū-Ge — 数学标注图</text>
+  <text class="sub" x="-300" y="-194">几何真源 logo-master.svg　比例系统 整数比 · 模数 M = 8（画布 = 128M）</text>
+
+  <!-- 结论 -->
+  <text class="mono" x="-300" y="1320">关键尺寸全部落在 8px 模数上：</text>
+  <text class="mono" x="-300" y="1360">画布 1024 = 128M　笔宽 128 = 16M　端帽 64 = 8M　留白 176 = 22M　外框 672 = 84M　栏距 272 = 34M　档距 160 = 20M</text>
+</svg>

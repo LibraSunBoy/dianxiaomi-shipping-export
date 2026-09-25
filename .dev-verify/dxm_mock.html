@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>店小秘 - 发货成功列表</title>
+<style>
+  body { margin: 0; font-family: "Microsoft YaHei", sans-serif; background: #f5f6f8; }
+  .nav-index { height: 52px; background: #1f2b3d; color: #fff; display: flex; align-items: center;
+               justify-content: flex-end; padding: 0 16px; font-size: 13px; }
+  .fr.head-nav-right { display: flex; align-items: center; gap: 16px; }
+  .user-name { color: #fff; }
+  .dropdown-list { display: none; }
+  .vip-back { display: inline-block; width: 18px; height: 18px; background: #e0b64a; border-radius: 3px; }
+  table { border-collapse: collapse; width: 100%; background: #fff; }
+  th, td { border: 1px solid #e3e6eb; padding: 8px; font-size: 12px; text-align: left; vertical-align: top; }
+  th { background: #f7f8fa; font-weight: 600; }
+  .img-css { width: 100px; height: 100px; object-fit: contain; display: block; margin-bottom: 4px; }
+  .wrap { padding: 12px; }
+</style>
+</head>
+<!-- body 的 class 与真实页面一致 -->
+<body class="order-layout-active">
+<div id="app">
+  <div class="in-body order-layout">
+    <!-- 顶部导航在 #app 内部（与真实页面一致）；由脚本延迟挂载，模拟 Vue 异步渲染 -->
+    <div id="nav-mount"></div>
+
+    <div class="wrap">
+      <table class="vxe-table--header">
+        <thead>
+          <tr>
+            <th colid="col_1"></th>
+            <th colid="col_12">商品信息</th>
+            <th colid="col_13">物流方式</th>
+            <th colid="col_15">时间</th>
+          </tr>
+        </thead>
+      </table>
+      <table class="vxe-table--body">
+        <tbody>
+          <tr class="vxe-body--row">
+            <td colid="col_1"><input type="checkbox"></td>
+            <td colid="col_12">
+              <img class="img-css" src="https://ecx.images-amazon.com/images/I/81q+Af25mUL._SL100.jpg" referrerpolicy="no-referrer">
+              <span>! 6W-W7WR-L9I5 x 1 USD 49.99 color ：Purple size ：2' x 6'</span>
+            </td>
+            <td colid="col_13">USPS 「YT2626700708781963」</td>
+            <td colid="col_15">下单： 2026-09-24 06:09 审核： 2026-09-24 07:00 发货： 2026-09-25 00:20 送达： 2026-10-21 14:59</td>
+          </tr>
+          <tr class="vxe-body--row">
+            <td colid="col_1"><input type="checkbox"></td>
+            <td colid="col_12">
+              <img class="img-css" src="https://ecx.images-amazon.com/images/I/71FJMPmO5eL._SL100.jpg" referrerpolicy="no-referrer">
+              <span>! 0L-VJC9-X3H4 x 1 USD 39.99 color ：Blue size ：3' x 5'</span>
+            </td>
+            <td colid="col_13">USPS 「YT2626700708781977」</td>
+            <td colid="col_15">下单： 2026-09-23 08:10 审核： 2026-09-23 09:00 发货： 2026-09-24 18:30 送达： 2026-10-20 11:00</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<template id="hdr-tpl">
+  <div class="nav-index">
+    <div class="fr head-nav-right">
+      <!-- 真实页面里同一层有 13 个 li-hover，只有 1 个带 user 类 -->
+      <div class="li-hover currency relative"><div class="btn-currency"><span class="cur">USD</span></div></div>
+      <div class="li-hover lang relative"><div class="btn-lang"><span class="cur">简体中文</span></div></div>
+      <div class="li-hover notice relative">
+        <div class="head-nav-service">
+          <div class="top-nav-btn">
+            <span class="ant-badge head_link"><button type="button"><i class="icon_service_nav"></i></button></span>
+            <span class="ant-badge head_link"><button type="button"><i class="icon_manual_nav"></i></button></span>
+            <!-- 注意：通知角标带 title="15"，是真实页面里最容易被误认成账号名的干扰项 -->
+            <span class="ant-badge head_link" title="15"><button type="button"><i class="icon_information_nav"></i></button></span>
+          </div>
+        </div>
+      </div>
+      <div class="li-hover user relative">
+        <div class="btn-user">
+          <div class="fl"><span class="vip-back"></span></div>
+          <div class="user-name fl p-left10" title="jia_yangdong">jia_yangdong</div>
+        </div>
+        <div class="dropdown-list">
+          <div class="user_table">
+            <table><tbody>
+              <tr>
+                <td><div>账号管理</div></td>
+                <td>
+                  <div><a href="/web/system/account/myAccount">我的账号</a></div>
+                  <div><a href="/web/system/account/transactionDetails">交易明细</a></div>
+                  <div><a href="/web/system/account/changePassword">修改密码</a></div>
+                </td>
+              </tr>
+              <tr>
+                <td><div>系统管理</div></td>
+                <td>
+                  <div><a href="/web/system/systemManage/systemSettings">系统设置</a></div>
+                  <div><a href="/web/system/systemManage/addressManage">地址管理</a></div>
+                  <div><a href="/web/system/systemManage/subAccountManage">子账号管理</a></div>
+                </td>
+              </tr>
+              <tr>
+                <td><div>充值服务</div></td>
+                <td>
+                  <div><a href="/web/vipInfo">购买VIP</a></div>
+                  <div><a href="/web/system/rechargeService/userVipCard">VIP充值卡</a></div>
+                </td>
+              </tr>
+              <tr>
+                <td></td>
+                <td>
+                  <div><a href="https://help.dianxiaomi.com">帮助手册</a></div>
+                  <div><a class="cur-pointer"><i class="icon_off f15"></i><span class="m-left3">退出</span></a></div>
+                </td>
+              </tr>
+            </tbody></table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script>
+  // 模拟店小秘头部由 Vue 异步挂载：2.5 秒后才进入 #app。
+  // 用于验证内容脚本的「账号区异步渲染 → 轮询兜底」逻辑。
+  setTimeout(function () {
+    var tpl = document.getElementById('hdr-tpl');
+    var mount = document.getElementById('nav-mount');
+    mount.parentNode.insertBefore(tpl.content.cloneNode(true), mount);
+  }, 2500);
+</script>
+</body>
+</html>

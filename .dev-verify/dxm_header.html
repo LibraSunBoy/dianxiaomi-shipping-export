@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>header frame</title>
+<style>
+  body { margin: 0; font-family: "Microsoft YaHei", sans-serif; }
+  .head-nav { height: 52px; background: #1f2b3d; color: #fff; display: flex; align-items: center;
+              justify-content: flex-end; padding: 0 16px; font-size: 13px; }
+  .head-nav-right { display: flex; align-items: center; gap: 16px; }
+  .user-name { color: #fff; }
+  .vip-back { display: inline-block; width: 18px; height: 18px; background: #e0b64a; border-radius: 3px; }
+  .dropdown-list { display: none; }
+</style>
+</head>
+<body>
+  <div class="head-nav">
+    <div class="fr head-nav-right">
+      <div class="head-nav-service">
+        <div class="top-nav-btn">
+          <span class="ant-badge head_link"><button type="button"><i class="icon_service_nav"></i></button></span>
+          <span class="ant-badge head_link"><button type="button"><i class="icon_manual_nav"></i></button></span>
+        </div>
+      </div>
+      <div class="li-hover user relative">
+        <div class="btn-user">
+          <div class="fl"><span class="vip-back"></span></div>
+          <div class="user-name fl p-left10" title="jia_yangdong">jia_yangdong</div>
+        </div>
+        <div class="dropdown-list">
+          <div class="user_table">
+            <table><tbody>
+              <tr>
+                <td><div>账号管理</div></td>
+                <td>
+                  <div><a href="/web/system/account/myAccount">我的账号</a></div>
+                  <div><a href="/web/system/account/transactionDetails">交易明细</a></div>
+                </td>
+              </tr>
+              <tr>
+                <td></td>
+                <td>
+                  <div><a href="https://help.dianxiaomi.com">帮助手册</a></div>
+                  <div><a class="cur-pointer"><i class="icon_off f15"></i><span class="m-left3">退出</span></a></div>
+                </td>
+              </tr>
+            </tbody></table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
