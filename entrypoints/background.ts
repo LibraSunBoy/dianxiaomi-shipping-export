@@ -70,8 +70,90 @@ async function fetchImageBest(url: string, candidates?: string[]): Promise<Fetch
   return { ok: false, error: errors.join(' | ') };
 }
 
+// ============================ 面单 PDF ============================
+
+interface PdfResponse {
+  ok: boolean;
+  url?: string;
+  base64?: string;
+  mime?: string;
+  error?: string;
+}
+
+/** 是不是一个会展示/下载 PDF 的地址（面单就是 `https://print.dianxiaomi.com/2026-09-30/<uuid>.pdf`） */
+function isPdfUrl(u: string | null | undefined): boolean {
+  return !!u && /^https?:/i.test(u) && /\.pdf(\?|#|$)/i.test(u);
+}
+
+async function fetchPdf(url: string): Promise<PdfResponse> {
+  try {
+    // 带 cookie：print.dianxiaomi.com 虽然是 uuid 直链，但万一有会话校验也不会挂
+    const res = await fetch(url, { credentials: 'include' });
+    if (!res.ok) return { ok: false, url, error: `HTTP ${res.status}` };
+    const mime = res.headers.get('content-type') || 'application/pdf';
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength < 64) return { ok: false, url, error: `too small (${buf.byteLength}B)` };
+    return { ok: true, url, mime, base64: arrayBufferToBase64(buf) };
+  } catch (e) {
+    return { ok: false, url, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * 等「点开始打印后 window.open 出来的那个 PDF 地址」。
+ *
+ * 内容脚本拿不到 window.open 打开的地址（那是新标签页，而且页面跑在主世界），
+ * 也不该去 hook 页面代码（会被 CSP 挡）。所以改用 tabs.onCreated / onUpdated：
+ * 只要出现 .pdf 地址，而且我们正在等（pdfWaiter 非空），就抓下来、顺手把这个
+ * 一闪而过的新标签页关掉，把结果回给内容脚本。
+ *
+ * pdfWaiter 为空时**什么都不做** —— 用户自己点开的 PDF 不能被这个扩展关掉。
+ */
+let pdfWaiter: { resolve: (r: PdfResponse) => void; timer: ReturnType<typeof setTimeout> } | null =
+  null;
+
+function armPdfWaiter(timeoutMs: number): Promise<PdfResponse> {
+  return new Promise((resolve) => {
+    if (pdfWaiter) {
+      clearTimeout(pdfWaiter.timer);
+      pdfWaiter.resolve({ ok: false, error: '被新的一次等待顶掉了' });
+    }
+    const w = {
+      resolve,
+      timer: setTimeout(() => {
+        if (pdfWaiter !== w) return;
+        pdfWaiter = null;
+        resolve({
+          ok: false,
+          error: `等待 PDF 超时（${Math.round(timeoutMs / 1000)}s 内没看到 .pdf 地址，多半是没点到「开始打印」，或浏览器把新标签页拦了）`,
+        });
+      }, timeoutMs),
+    };
+    pdfWaiter = w;
+  });
+}
+
+function onTabUrl(tabId: number, url: string | null | undefined): void {
+  if (!isPdfUrl(url) || !pdfWaiter || !url) return;
+  const w = pdfWaiter;
+  pdfWaiter = null;
+  clearTimeout(w.timer);
+  console.log('[店小秘导出] 捕获到面单 PDF:', url);
+  void fetchPdf(url).then(w.resolve);
+  // 这是我们自己触发的一次性标签页，抓完就关，免得每次导出都开一堆 PDF 标签
+  if (tabId >= 0) browser.tabs.remove(tabId).catch(() => undefined);
+}
+
 export default defineBackground(() => {
   console.log('[店小秘导出] background 已启动', { id: browser.runtime.id });
+
+  // 面单：window.open 打开 .pdf 时会先建标签页（onCreated 可能没 url，等 onUpdated 补）
+  browser.tabs.onCreated.addListener((tab) => {
+    onTabUrl(tab.id ?? -1, tab.pendingUrl ?? tab.url);
+  });
+  browser.tabs.onUpdated.addListener((tabId, info, tab) => {
+    onTabUrl(tabId, info.url ?? tab.url);
+  });
 
   browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg && msg.type === 'DXM_FETCH_IMAGE' && typeof msg.url === 'string') {
@@ -79,6 +161,25 @@ export default defineBackground(() => {
         .then((r) => sendResponse(r))
         .catch((e) => sendResponse({ ok: false, error: String(e) }));
       return true; // 异步响应，保持消息通道
+    }
+    if (msg && msg.type === 'DXM_AWAIT_PDF') {
+      const raw = typeof msg.timeout === 'number' ? msg.timeout : 45000;
+      const timeout = Math.min(120000, Math.max(3000, raw));
+      armPdfWaiter(timeout)
+        .then(sendResponse)
+        .catch((e) => sendResponse({ ok: false, error: String(e) }));
+      return true;
+    }
+    if (msg && msg.type === 'DXM_CANCEL_PDF') {
+      // 内容脚本没点到「开始打印」时主动撤销，免得接下来用户自己开的 PDF
+      // 被当成面单抓下来、连标签页一起关掉
+      if (pdfWaiter) {
+        clearTimeout(pdfWaiter.timer);
+        pdfWaiter.resolve({ ok: false, error: '已取消' });
+        pdfWaiter = null;
+      }
+      sendResponse({ ok: true });
+      return false;
     }
     return false;
   });

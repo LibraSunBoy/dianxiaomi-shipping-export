@@ -42,7 +42,8 @@ DIST="D:/soft/JetBrains/workspace/dianxiaomi/.output/chrome-mv3-dev" node dxm_pr
 | 有头观察 | `HEADFUL=1 node dxm_probe.cjs` |
 | 验证 prod 产物 | `DIST=.../.output/chrome-mv3 node dxm_probe.cjs` |
 
-探针会依次断言：① 面板挂载 + 账号识别 → ② 选日期范围 → ③ `✕` 只收起不删节点、且页面内
+探针会依次断言：① 面板挂载 + 账号识别 → ② 面板上**没有**日期范围选择器
+（`noDateRangeUI=true`，导出的是列表全部数据）→ ③ `✕` 只收起不删节点、且页面内
 **没有**圆形开关（`ballGone=true`）→ ④ 弹窗里的开关（点一次收起、再点一次展开，并读回按钮文案）
 → ⑤ 导出下载（文件名 + 字节数）→ ⑥ 收尾快照（面板全量可见文案 `allText`、`diagEntryGone` 等）。
 

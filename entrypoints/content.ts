@@ -2,14 +2,14 @@
  * 店小秘发货成功列表导出插件 —— Content Script
  *
  * 功能：在 https://www.dianxiaomi.com/ 的「发货成功列表」页面注入一个悬浮面板，
- *      用户选择日期范围（当天 / 近两天 / 近三天）后，将列表数据按固定字段
- *      （图片、尺寸、件数、材质、运单号）导出为 Excel，文件名取当前登录账号用户名。
+ *      把当前列表数据按固定字段（图片、尺寸(CM)、件数、材质、运单号）导出为 Excel，
+ *      文件名取当前登录账号用户名。
  *
  * 数据来源（店小秘 vxe-table 真实结构）：
  *   - 图片 / 尺寸 / 件数  ← 「商品信息」列（图片取 <img>，尺寸取 size，件数取 x N）
  *   - 运单号              ← 「物流方式」列里的单号（如 「YT2626700708781963」）
- *   - 材质                ← 店小秘发货成功列表页【无此字段】，留空（见下方说明）
- *   - 日期筛选            ← 「时间」列里的「发货：YYYY-MM-DD HH:mm」
+ *   - 材质                ← 店小秘发货成功列表页【无此字段】，统一填默认值「水洗底」
+ *   - 尺寸                ← 解析后按业务口径 ×30 换算成厘米（见 toCmSize）
  *
  * 说明：本页面表格是 vxe-table，表头比数据行多 1 列（首列选择框），且存在固定列，
  *       因此不能简单按「表头索引 == 数据行索引」读取。这里用每个单元格自带的
@@ -30,11 +30,15 @@ declare const __DXM_BUILD_TAG__: string;
 
 const CONFIG = {
   /** 导出目标列（顺序即 Excel 列顺序），与参考表 张攀7-10发货表.xlsx 一致 */
-  targetColumns: ['图片', '尺寸', '件数', '材质', '运单号'] as const,
+  targetColumns: ['图片', '尺寸(CM)', '件数', '材质', '运单号'] as const,
+
+  /** 材质列默认值 —— 店小秘发货成功列表页没有这个字段，按业务口径固定填这个 */
+  defaultMaterial: '水洗底',
 
   /**
    * 店小秘发货成功列表真实列标题 -> 关键词（命中其一即用该列）。
-   * 这些列是解析 5 个目标字段的数据来源。
+   * 商品信息 / 物流方式 是解析目标字段的数据来源；
+   * 时间 不再参与导出，只用来把数据行与 vxe 的展开详情行区分开（见 readRows）。
    */
   sourceColumns: {
     商品信息: ['商品信息'],
@@ -166,6 +170,53 @@ function absUrl(src: string): string {
   }
 }
 
+/** 等待 ms 毫秒（滚动触发懒加载、图片收尾时用） */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * `data:` 地址是不是「还没加载出来的占位图」。
+ * 占位图就是 1×1 透明 GIF，百来个字节；真正内嵌在页面里的图片（base64）远比这长。
+ */
+function isInlinePlaceholder(src: string): boolean {
+  return src.startsWith('data:') && src.length < 1024;
+}
+
+/**
+ * 从一个 <img> 取真实图片地址；取不到返回 ''（= 这张图还没加载出来）。
+ *
+ * 图片是懒加载的：没进过视口的行，`src` 只是 1×1 占位 dataURL（data:image/gif...），
+ * 真实地址此时不在 DOM 里 —— 直接拿它导出就是空图。所以：
+ *   1) src 已是真实地址 → 用它；
+ *   2) src 是占位 → 按常见懒加载属性（data-src / data-original / ...）兜底；
+ *   3) 都没有 → 返回 ''，由调用方决定是「滚一遍列表再取」还是留空。
+ */
+function imgUrl(im: Element | null | undefined): string {
+  if (!im) return '';
+  for (const attr of ['src', 'data-src', 'data-original', 'data-lazy', 'data-url', 'data-img']) {
+    const v = im.getAttribute(attr);
+    if (!v || v.startsWith('blob:')) continue;
+    if (isInlinePlaceholder(v)) continue; // 1×1 占位 GIF
+    return absUrl(v);
+  }
+  return '';
+}
+
+/**
+ * 图片是否仍是「未加载」状态（值得再滚一遍 / 等一下才能取到地址）：
+ *   - 没 src、blob:、1×1 占位 GIF → 未加载；
+ *   - 真实地址但还没下载完（`!complete`）→ 也算，读行前等它下载完能少留空格；
+ *   - 解码失败（naturalWidth 为 0）和 1×1 → 未加载。
+ */
+function isPendingImg(im: Element): boolean {
+  const src = im.getAttribute('src') || '';
+  if (!src || src.startsWith('blob:') || isInlinePlaceholder(src)) return true;
+  const el = im as HTMLImageElement;
+  if (!el.complete) return true;
+  return el.naturalWidth <= 1;
+}
+
 /**
  * 由页面上的缩略图 URL 推出「高清图」候选链（按优先级）。
  *
@@ -180,7 +231,9 @@ function absUrl(src: string): string {
  *   1) 换 HD 尺寸修饰符（首选，清晰且体积可控）
  *   2) 去掉修饰符 → 原图（最清晰，但可能几 MB）
  *   3) 换 `_SL500_`（保险的中等尺寸）
- *   4) 页面原始 URL（最终兜底，即使前面都 404 也不至于整格空白）
+ *   4) 以上三条再换到 `m.media-amazon.com` 走一遍 —— 老图床 `ecx.` 对部分图片
+ *      /部分尺寸修饰符会 404，同一张图换个域名往往就活了
+ *   5) 页面原始 URL（最终兜底，即使前面都 404 也不至于整格空白）
  *
  * 非 Amazon 图床（URL 里没有尺寸修饰符）不会被改动，只返回原 URL。
  */
@@ -191,9 +244,17 @@ function buildImageCandidates(url: string): string[] {
     const base = m[1]!;
     const ext = m[2]!;
     const qs = m[3] ?? '';
-    out.push(`${base}._SL${CONFIG.hdSize}_.${ext}${qs}`);
-    out.push(`${base}.${ext}${qs}`);
-    out.push(`${base}._SL500_.${ext}${qs}`);
+    const bases = [base];
+    const alt = base.replace(
+      /^https?:\/\/(?:ecx|images|media)\.images-amazon\.com/i,
+      'https://m.media-amazon.com',
+    );
+    if (alt !== base) bases.push(alt);
+    for (const b of bases) {
+      out.push(`${b}._SL${CONFIG.hdSize}_.${ext}${qs}`);
+      out.push(`${b}.${ext}${qs}`);
+      out.push(`${b}._SL500_.${ext}${qs}`);
+    }
   }
   out.push(url);
   return Array.from(new Set(out));
@@ -209,97 +270,11 @@ function ymd(d: Date): string {
   return `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}`;
 }
 
-/**
- * 从文本解析发货日期为 Date；失败返回 null。
- * 兼容以下格式（店小秘线上常见写法都覆盖）：
- *   - 2026-09-24 18:00 / 2026-09-24 18:00:00
- *   - 2026/09/24 18:00（斜杠分隔）
- *   - 09-24 18:00（缺年份，按当前年补齐）
- *   - 今天 18:00 / 昨天 / 前天（相对日期，按当前日期回推）
- *   - 发货：2026-09-24 18:00（带前缀）
- */
-function parseDate(raw: string): Date | null {
-  if (!raw) return null;
-  const s = raw.trim();
-  if (!s) return null;
-  const now = new Date();
-
-  // 1) 相对日期：今天 / 昨天 / 前天（含「昨日」写法）
-  const relMap: Record<string, number> = { 今天: 0, 今日: 0, 昨天: 1, 昨日: 1, 前天: 2 };
-  for (const kw of Object.keys(relMap)) {
-    if (s.includes(kw)) {
-      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - relMap[kw]!);
-      const tm = s.match(/(\d{1,2}):(\d{2})/);
-      if (tm) d.setHours(Number(tm[1]), Number(tm[2]), 0, 0);
-      else d.setHours(0, 0, 0, 0);
-      if (!Number.isNaN(d.getTime())) return d;
-    }
-  }
-
-  // 2) 完整日期 2026-09-24 / 2026/09/24（+ 可选时间）
-  const full = s.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
-  if (full) {
-    const d = new Date(
-      Number(full[1]),
-      Number(full[2]) - 1,
-      Number(full[3]),
-      full[4] ? Number(full[4]) : 0,
-      full[5] ? Number(full[5]) : 0,
-    );
-    if (!Number.isNaN(d.getTime())) return d;
-  }
-
-  // 3) 缺年份：09-24 18:00 / 9/24 18:00（按当前年补齐）
-  const part = s.match(/(\d{1,2})[-/](\d{1,2})(?:[ T](\d{1,2}):(\d{2}))?/);
-  if (part) {
-    const d = new Date(
-      now.getFullYear(),
-      Number(part[1]) - 1,
-      Number(part[2]),
-      part[3] ? Number(part[3]) : 0,
-      part[4] ? Number(part[4]) : 0,
-    );
-    if (!Number.isNaN(d.getTime())) return d;
-  }
-
-  // 4) 兜底：浏览器原生解析
-  const t = Date.parse(s);
-  if (!Number.isNaN(t)) return new Date(t);
-  return null;
-}
-
-/**
- * 从「时间」单元格提取【发货】时间文本。
- * 该单元格实际包含 6 个时间：下单 / 审核 / 申请 / 提交 / 发货 / 送达，
- * 例如：下单： 2026-09-24 06:09 审核： ... 发货： 2026-09-24 18:00 送达： 2026-10-21 14:59
- * 必须专门取「发货：」后面的那个，否则会误用「下单」日期（两者可能差一天）。
- */
-function extractShipDate(text: string): string {
-  if (!text) return '';
-  const ship = text.match(/发货\s*[：:]\s*(\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:\s+\d{1,2}:\d{2})?)/);
-  if (ship) return ship[1] ?? '';
-  // 兜底：没有「发货：」时取第一个日期
-  const any = text.match(/\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:\s+\d{1,2}:\d{2})?/);
-  return any ? any[0] : '';
-}
-
 /** 本地日期（当天 00:00:00） */
 function startOfDay(d = new Date()): Date {
   const x = new Date(d);
   x.setHours(0, 0, 0, 0);
   return x;
-}
-
-/** 根据范围返回起始日期（含） */
-function rangeStart(range: 'today' | '2d' | '3d'): Date {
-  const s = startOfDay();
-  if (range === '2d') s.setDate(s.getDate() - 1);
-  else if (range === '3d') s.setDate(s.getDate() - 2);
-  return s;
-}
-
-function rangeLabel(range: 'today' | '2d' | '3d'): string {
-  return range === 'today' ? '当天' : range === '2d' ? '近两天' : '近三天';
 }
 
 // ============================ 表格探测与读取 ============================
@@ -403,6 +378,110 @@ function readRows(tbl: HTMLTableElement, map: ScanResult): Array<Map<string, Ele
   return rows;
 }
 
+// ============================ 懒加载图片：计数与触发 ============================
+
+/** 数据表里还有多少张商品图没加载出来（占位 dataURL / 空 src） */
+function countPendingImages(tbl: HTMLTableElement | null): number {
+  if (!tbl) return 0;
+  let n = 0;
+  for (const im of tbl.querySelectorAll('tbody img')) if (isPendingImg(im)) n++;
+  return n;
+}
+
+/** 滚动器抽象 —— 元素容器与整页滚动用同一套逻辑 */
+interface Scroller {
+  get: () => number;
+  set: (v: number) => void;
+  /** 可滚动总高度 */
+  extent: () => number;
+  /** 视口高度 */
+  viewport: () => number;
+}
+
+function elScroller(el: HTMLElement): Scroller {
+  return {
+    get: () => el.scrollTop,
+    set: (v) => {
+      el.scrollTop = v;
+    },
+    extent: () => el.scrollHeight,
+    viewport: () => el.clientHeight || window.innerHeight,
+  };
+}
+
+/**
+ * 找到能带动列表滚动的东西，按优先级：
+ *   1) vxe 自己的 `.vxe-table--body-wrapper`（列表滚容器，首选）
+ *   2) 向上第一个真正 overflow 滚动的祖先
+ *   3) 整页滚动（列表一屏放得下、但图片还在页面折叠区的情况）
+ */
+function findScroller(tbl: HTMLTableElement): Scroller | null {
+  const vxe = tbl.closest('.vxe-table--body-wrapper') as HTMLElement | null;
+  if (vxe && vxe.scrollHeight > vxe.clientHeight + 4) return elScroller(vxe);
+
+  let cur = tbl.parentElement;
+  while (cur && cur !== document.documentElement) {
+    if (cur.scrollHeight > cur.clientHeight + 4) {
+      const oy = getComputedStyle(cur).overflowY;
+      if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') return elScroller(cur as HTMLElement);
+    }
+    cur = cur.parentElement;
+  }
+
+  const de = document.scrollingElement;
+  if (de && de.scrollHeight > window.innerHeight + 4) {
+    return {
+      get: () => de.scrollTop,
+      set: (v) => de.scrollTo(0, v),
+      extent: () => de.scrollHeight,
+      viewport: () => window.innerHeight,
+    };
+  }
+  return null;
+}
+
+/**
+ * 把列表从上到下滚一遍，触发懒加载把商品图真正加载出来，最后滚回原位。
+ * 返回仍处于未加载状态的图片数（0 = 全部就绪）。
+ *
+ * 为什么必须滚动：没进过视口的行，<img> 的 src 只是 1×1 占位图，
+ * 真实地址根本不在 DOM 里 —— 不滚就导出，那些行必然没有图片
+ * （这正是「有时候图片下不进 Excel」最常见的原因）。
+ */
+async function ensureImagesLoaded(tbl: HTMLTableElement | null): Promise<number> {
+  if (!tbl) return 0;
+  if (countPendingImages(tbl) === 0) return 0;
+  const scroller = findScroller(tbl);
+  if (!scroller) return countPendingImages(tbl);
+
+  const origin = scroller.get();
+  const step = Math.max(240, Math.floor(scroller.viewport() * 0.8));
+  let guard = 0;
+  try {
+    for (let y = 0; y < scroller.extent() && guard < 100; y += step, guard++) {
+      scroller.set(y);
+      await sleep(150);
+      if (countPendingImages(tbl) === 0) break;
+    }
+    // 收尾：等最后一屏的图走完网络（懒加载触发 ≠ 已经下载完）。
+    // 连续 3 次数量不降就认定「剩下的本来就不会加载」（页面自身加载失败的图），
+    // 不再干等 —— 免得面板卡在提示上好几秒。
+    let last = countPendingImages(tbl);
+    let stuck = 0;
+    for (let i = 0; i < 25 && countPendingImages(tbl) > 0; i++) {
+      await sleep(200);
+      const now = countPendingImages(tbl);
+      stuck = now >= last ? stuck + 1 : 0;
+      last = now;
+      if (stuck >= 3) break;
+    }
+  } finally {
+    scroller.set(origin);
+  }
+  await sleep(120);
+  return countPendingImages(tbl);
+}
+
 // ============================ 字段解析 ============================
 
 interface Product {
@@ -420,6 +499,47 @@ function parseSize(seg: string): string {
   const cIdx = v.search(/\s+color\s*[：:]/i);
   if (cIdx >= 0) v = v.slice(0, cIdx);
   return v.trim();
+}
+
+/**
+ * 尺寸换算成厘米：数值 × 30 并取整（业务口径，1 英尺 ≈ 30cm），表头写作「尺寸(CM)」。
+ *
+ * 规则 = **只乘能乘的，其余原样**：
+ *   1) 先去掉紧跟数字的英制单位记号（' / ′ / " / ft / feet / inch / inches / in）——
+ *      换算完就该是厘米了，再留着英尺引号是自相矛盾；
+ *      ⚠️ 这里不能用 `\bft\b`：`2ft` 的 `2` 与 `f` 都是单词字符，边界不成立，整段会漏掉；
+ *   2) `x` / `×` 是分隔符（`2x7ft` = 2 x 7 ft），先把贴着数字的 x 拆成独立的 ` x `，
+ *      否则它会被当成单位、把前面的数字一起跳过；
+ *   3) 逐个**独立**数字 × 30 并取整（2.54 → 76，0.7 → 21）；
+ *      字母与数字粘在一起的整段不动（`A4`、`2XL`、`12cm`、`12.5cm` 是型号/带单位的值）；
+ *   4) 整段一个可乘的数字都没有 → 原样返回，绝不写进猜出来的值。
+ *
+ * 例：`2ft` → `60`；`2x7ft` → `60 x 210`；`2' x 6'` → `60 x 180`；`20*15*10` → `600*450*300`。
+ */
+function toCmSize(raw: string): string {
+  const s = (raw ?? '').trim();
+  if (!s || !/\d/.test(s)) return s;
+
+  // 1) 去英制单位（长的放前面，避免 inch 被 in 吃掉半个；负向断言只挂在字母单位上，
+  //    否则 `2'x6'` 里的引号会被后面的 x 挡住、删不掉）
+  const noUnit = s
+    .replace(
+      /(\d)\s*(?:(?:'|′|”|")|(?:inches|feet|foot|inch|ft|in)(?![a-z]))/gi,
+      '$1',
+    )
+    .trim();
+
+  // 2) 拆开贴着数字的分隔符 x
+  const sep = noUnit.replace(/(\d)\s*[x×]\s*(?=\d)/g, '$1 x ');
+
+  // 3) 逐个数字换算；含字母的 token（型号 / 带单位）原样保留
+  return sep.replace(
+    /\d+(?:\.\d+)?[A-Za-z]+|[A-Za-z]+\d+(?:\.\d+)?|\d+(?:\.\d+)?/g,
+    (t) => {
+      if (/[A-Za-z]/.test(t)) return t;
+      return String(Math.round(Number(t) * 30));
+    },
+  );
 }
 
 /**
@@ -442,21 +562,34 @@ function parseQty(seg: string): string {
 /**
  * 从「商品信息」单元格解析出一个或多个商品。
  *
- * 一个订单格可能含【多个商品】，真实文本形如：
- *   ! F8-YKAY-QP5Z x 1 USD 59.99 color ：... size ：4' x 5' ! M9-MGO2-R30H x 2 USD 24.99 color ：... size ：2' x 3'
- * 每个商品各有独立图片/尺寸/件数，因此按「!」拆成多段，一段=一个商品=导出一行。
+ * 首选按【商品块】逐个解析：每个商品在页面里是一个独立的 `.order-sku`
+ * （图片在 `.order-sku__image`，文本在 `.order-sku__info`），
+ * 图片与文本天然一一对应 —— 绝不会出现「图片错位 / 多商品丢图」。
+ *
+ * 兜底（页面没有 .order-sku 结构时）：按渲染出的 "!" 拆段，一段=一个商品。
+ * 这里不再「先过滤占位图再按下标对齐」—— 那样会让占位图把下标挤歪，
+ * 导致第 1 段拿到第 3 张的图。改为按下标原位取，取不到就留空。
  *
  * 图片为懒加载：未加载时 src 是 1x1 占位 base64（data:image/gif...），
- * 这类必须过滤掉，否则导出的是一堆占位图。
+ * 此时真实地址不在 DOM 里，imgUrl 返回 ''（见其注释）。
  */
 function parseProducts(cell: Element | undefined): Product[] {
-  const text = (cell?.textContent ?? '').replace(/\s+/g, ' ').trim();
-  // 收集真实图片（过滤懒加载占位图）
-  const imgs = Array.from(cell?.querySelectorAll('img') ?? [])
-    .map((im) => im.getAttribute('src') || im.getAttribute('data-src') || '')
-    .filter((s) => s && !s.startsWith('data:'));
+  if (!cell) return [{ 图片: '', 尺寸: '', 件数: '' }];
 
-  // 按商品拆分（每段以 SKU 开头，段间是渲染出的 "!"）
+  // ---- 1) 按商品块解析（真实结构） ----
+  const blocks = Array.from(cell.querySelectorAll('.order-sku'));
+  if (blocks.length > 0) {
+    return blocks.map((b) => {
+      const text = (b.textContent ?? '').replace(/\s+/g, ' ').trim();
+      const im =
+        b.querySelector('.order-sku__image img') ?? b.querySelector('.imageContainer img') ?? b.querySelector('img');
+      return { 图片: imgUrl(im), 尺寸: parseSize(text), 件数: parseQty(text) };
+    });
+  }
+
+  // ---- 2) 兜底：按 "!" 拆段，图片按下标原位对齐 ----
+  const imgs = Array.from(cell.querySelectorAll('img')).map((im) => imgUrl(im));
+  const text = (cell.textContent ?? '').replace(/\s+/g, ' ').trim();
   const segs = text
     .split(/\s*!\s*/)
     .map((s) => s.trim())
@@ -464,7 +597,7 @@ function parseProducts(cell: Element | undefined): Product[] {
   const list = segs.length > 0 ? segs : [text];
 
   return list.map((seg, i) => ({
-    图片: imgs[i] ? absUrl(imgs[i]!) : (imgs[0] ? absUrl(imgs[0]!) : ''),
+    图片: imgs[i] ?? (list.length === 1 ? (imgs[0] ?? '') : ''),
     尺寸: parseSize(seg),
     件数: parseQty(seg),
   }));
@@ -480,38 +613,20 @@ function parseTracking(text: string): string {
 
 /**
  * 把一个数据行 Map<标题,单元格> 转成【一条或多条】导出记录。
- * 一个订单可能含多个商品 → 每个商品导出一行（共享同一运单号与发货时间）。
+ * 一个订单可能含多个商品 → 每个商品导出一行（共享同一运单号）。
  */
-function toRecords(
-  rowMap: Map<string, Element>,
-): Array<Record<string, string> & { __date: string; __dateRaw: string }> {
+function toRecords(rowMap: Map<string, Element>): Array<Record<string, string>> {
   const goodsCell = pickCell(rowMap, CONFIG.sourceColumns['商品信息']);
   const logisticsCell = pickCell(rowMap, CONFIG.sourceColumns['物流方式']);
-  const timeCell = pickCell(rowMap, CONFIG.sourceColumns['时间']);
 
   const products = parseProducts(goodsCell);
   const 运单号 = parseTracking((logisticsCell?.textContent ?? '').trim());
 
-  // 解析发货日期：优先取「时间」列里的【发货】时间，取不到则退化到整行文本找日期
-  const timeText = (timeCell?.textContent ?? '').trim();
-  let dateObj = parseDate(extractShipDate(timeText));
-  let dateRaw = timeText;
-  if (!dateObj) {
-    const whole = Array.from(rowMap.values())
-      .map((e) => (e.textContent ?? '').trim())
-      .join(' ');
-    dateObj = parseDate(extractShipDate(whole));
-    if (dateObj) dateRaw = whole;
-  }
-  const __date = dateObj ? dateObj.toISOString() : '';
-
   return products.map((p) => ({
-    __date,
-    __dateRaw: dateRaw,
     图片: p.图片,
-    尺寸: p.尺寸,
+    尺寸: toCmSize(p.尺寸),
     件数: p.件数,
-    材质: '', // 店小秘发货成功列表页无「材质」字段，留空
+    材质: CONFIG.defaultMaterial, // 页面没有「材质」字段，统一填默认值
     运单号,
   }));
 }
@@ -869,13 +984,21 @@ function downloadBlob(blob: Blob, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
+/** 一张抓下来并处理好的图片 */
+interface PreparedImage {
+  dataUrl: string;
+  mime: string;
+}
+
 /**
- * 经 background 下载图片，返回 dataURL；失败返回 null。
+ * 经 background 下载图片；失败返回 null。
  * （content script 直接 fetch 会被 CORS 拦，必须走 background 的主机权限）
  *
  * 会一并把「高清候选链」带过去，由 background 依次尝试，取第一个真正抓到的。
+ * 这里**不打日志** —— 失败要在导出结束时统一汇报（同一张图可能被多行引用，
+ * 逐次 warn 会刷屏），见 exportToExcel 的统计。
  */
-async function fetchImageViaBackground(url: string): Promise<string | null> {
+async function fetchImageViaBackground(url: string): Promise<PreparedImage | null> {
   try {
     const resp = (await browser.runtime.sendMessage({
       type: 'DXM_FETCH_IMAGE',
@@ -888,14 +1011,30 @@ async function fetchImageViaBackground(url: string): Promise<string | null> {
       if (resp.url && resp.url !== url) {
         console.log('[店小秘导出] 已换高清图:', url, '->', resp.url);
       }
-      return `data:${resp.mime || 'image/jpeg'};base64,${resp.base64}`;
+      const mime = resp.mime || 'image/jpeg';
+      return { dataUrl: `data:${mime};base64,${resp.base64}`, mime };
     }
-    console.warn('[店小秘导出] 图片下载失败:', url, resp?.error);
     return null;
-  } catch (e) {
-    console.warn('[店小秘导出] 图片下载异常:', url, e);
+  } catch {
     return null;
   }
+}
+
+/** 从 dataURL 里读出 mime（`data:image/png;base64,...` → `image/png`） */
+function mimeOfDataUrl(dataUrl: string): string {
+  const m = /^data:([^;,]+)/.exec(dataUrl);
+  return m?.[1] || 'image/jpeg';
+}
+
+/**
+ * ExcelJS addImage 的 extension 必须与图片真实格式一致，
+ * 标成 jpeg 却塞 png 数据，Excel 打开就是空白/黑块。
+ */
+function extOfMime(mime: string): 'jpeg' | 'png' | 'gif' {
+  const m = (mime || '').toLowerCase();
+  if (m.includes('png')) return 'png';
+  if (m.includes('gif')) return 'gif';
+  return 'jpeg';
 }
 
 /**
@@ -905,8 +1044,12 @@ async function fetchImageViaBackground(url: string): Promise<string | null> {
  *   Excel 只认得 png/jpeg/gif。转 PNG 是无损的，但一张 900px 商品图 PNG 动辄
  *   500KB~1MB，几十行就把 xlsx 撑到几十 MB；同样清晰度的 JPEG 只要 100KB 左右。
  *   商品图基本是白底照片，先铺白再画，避免透明区域被压成黑块。
+ *
+ * 转换失败（图片解码不了 / canvas 拿不到）时**原样返回**，并保留原始 mime ——
+ * 调用方必须按这个 mime 注册 extension，否则格式对不上，Excel 里不显示。
  */
-function toJpegDataUrl(dataUrl: string): Promise<string> {
+function toJpegDataUrl(dataUrl: string, mime?: string): Promise<PreparedImage> {
+  const original: PreparedImage = { dataUrl, mime: mime ?? mimeOfDataUrl(dataUrl) };
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
@@ -918,38 +1061,73 @@ function toJpegDataUrl(dataUrl: string): Promise<string> {
         c.width = Math.max(1, Math.round(w * scale));
         c.height = Math.max(1, Math.round(h * scale));
         const ctx = c.getContext('2d');
-        if (!ctx) return resolve(dataUrl);
+        if (!ctx) return resolve(original);
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, c.width, c.height);
         ctx.drawImage(img, 0, 0, c.width, c.height);
         // dataURL 是同源的，canvas 不会被污染
-        return resolve(c.toDataURL('image/jpeg', CONFIG.imgQuality));
+        return resolve({
+          dataUrl: c.toDataURL('image/jpeg', CONFIG.imgQuality),
+          mime: 'image/jpeg',
+        });
       } catch {
-        return resolve(dataUrl);
+        return resolve(original);
       }
     };
-    img.onerror = () => resolve(dataUrl);
+    img.onerror = () => resolve(original);
     img.src = dataUrl;
   });
 }
 
+/** 导出结果统计 —— 图片没进 Excel 时必须有迹可循，不能只留一句「导出成功」 */
+interface ExportStats {
+  rows: number;
+  /** 成功嵌入图片的行数 */
+  withImage: number;
+  /** 页面里就没拿到图片地址的行数（懒加载没触发 / 页面本身无图） */
+  noUrl: number;
+  /** 拿到地址但最终没下载成功的图片数（按唯一 URL 计） */
+  failed: number;
+  failedUrls: string[];
+}
+
 /**
- * 导出 Excel：表头 + 数据行，并把商品图【嵌入】到「图片」列。
+ * 导出 Excel：表头 + 当前列表的全部数据行，并把商品图【嵌入】到「图片」列。
  *
- * filename 由调用方算好（用户名 + 日期范围），这里不再关心命名规则。
+ * filename 由调用方算好（用户名 + 导出当天日期），这里不再关心命名规则。
+ * 返回统计（含图/无地址/下载失败），由调用方展示在面板提示里。
  */
 async function exportToExcel(
-  rows: Array<Record<string, string> & { __date: string; __dateRaw: string }>,
+  rows: Array<Record<string, string>>,
   filename: string,
   onProgress?: (done: number, total: number) => void,
-): Promise<void> {
-  // ---- 1) 先把用到的图片全部下载下来（同一 URL 只下一次） ----
-  const urls = Array.from(new Set(rows.map((r) => r.图片).filter((u) => !!u)));
-  const imgCache = new Map<string, string | null>();
+): Promise<ExportStats> {
+  // ---- 1) 下载用到的图片（同一 URL 只下一次） ----
+  const urls: string[] = Array.from(
+    new Set(rows.map((r) => r.图片).filter((u): u is string => !!u)),
+  );
+  const imgCache = new Map<string, PreparedImage>();
+
+  const loadOne = async (u: string): Promise<void> => {
+    const raw = await fetchImageViaBackground(u);
+    if (raw) imgCache.set(u, await toJpegDataUrl(raw.dataUrl, raw.mime));
+  };
+
   for (let i = 0; i < urls.length; i++) {
     onProgress?.(i + 1, urls.length);
-    const raw = await fetchImageViaBackground(urls[i]!);
-    imgCache.set(urls[i]!, raw ? await toJpegDataUrl(raw) : null);
+    await loadOne(urls[i]!);
+  }
+
+  // 网络抖动 / CDN 限流会偶发失败：隔一会儿再试一轮（最多 20 张，免得整体卡太久）
+  const retryList = urls.filter((u) => !imgCache.has(u)).slice(0, 20);
+  if (retryList.length) {
+    await sleep(800);
+    for (const u of retryList) await loadOne(u);
+  }
+
+  const failedUrls = urls.filter((u) => !imgCache.has(u));
+  if (failedUrls.length) {
+    console.warn(`[店小秘导出] ${failedUrls.length} 张图片下载失败（已重试一次）:`, failedUrls);
   }
 
   // ---- 2) 建工作簿 ----
@@ -968,28 +1146,34 @@ async function exportToExcel(
   ws.getColumn(5).width = 26; // 运单号
 
   // ---- 3) 逐行写数据 + 插图 ----
+  let withImage = 0;
+  let noUrl = 0;
   rows.forEach((r, i) => {
     const rowNo = i + 2; // 1-based 行号（表头占第 1 行）
     ws.addRow(['', r.尺寸, r.件数, r.材质, r.运单号]);
     ws.getRow(rowNo).height = CONFIG.imgRowHeight;
 
-    const dataUrl = r.图片 ? imgCache.get(r.图片) : null;
-    if (dataUrl) {
-      const b64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
-      try {
-        // ExcelJS 的类型声明写的是 Node 的 Buffer，浏览器环境实际传 Uint8Array，故整体断言
-        const imageId = wb.addImage({
-          buffer: base64ToBytes(b64),
-          extension: 'jpeg',
-        } as unknown as Parameters<typeof wb.addImage>[0]);
-        ws.addImage(imageId, {
-          tl: { col: 0, row: rowNo - 1 }, // tl 是 0-based
-          ext: { width: CONFIG.imgPx, height: CONFIG.imgPx },
-          editAs: 'oneCell',
-        });
-      } catch (e) {
-        console.warn('[店小秘导出] 插图失败:', r.图片, e);
-      }
+    if (!r.图片) {
+      noUrl++;
+      return;
+    }
+    const prepared = imgCache.get(r.图片);
+    if (!prepared) return; // 下载失败，格子留空（failed 已统计）
+    const b64 = prepared.dataUrl.slice(prepared.dataUrl.indexOf(',') + 1);
+    try {
+      // ExcelJS 的类型声明写的是 Node 的 Buffer，浏览器环境实际传 Uint8Array，故整体断言
+      const imageId = wb.addImage({
+        buffer: base64ToBytes(b64),
+        extension: extOfMime(prepared.mime),
+      } as unknown as Parameters<typeof wb.addImage>[0]);
+      ws.addImage(imageId, {
+        tl: { col: 0, row: rowNo - 1 }, // tl 是 0-based
+        ext: { width: CONFIG.imgPx, height: CONFIG.imgPx },
+        editAs: 'oneCell',
+      });
+      withImage++;
+    } catch (e) {
+      console.warn('[店小秘导出] 插图失败:', r.图片, e);
     }
   });
 
@@ -1001,25 +1185,325 @@ async function exportToExcel(
     }),
     filename,
   );
-}
 
-/** 数据范围文本：当天 `20260925`，跨天 `20260923-20260925`（仅用于面板展示） */
-function dateRangeText(range: 'today' | '2d' | '3d'): string {
-  const end = startOfDay();
-  const start = rangeStart(range);
-  return ymd(start) === ymd(end) ? ymd(end) : `${ymd(start)}-${ymd(end)}`;
+  return {
+    rows: rows.length,
+    withImage,
+    noUrl,
+    failed: failedUrls.length,
+    failedUrls,
+  };
 }
 
 /**
  * 生成导出文件名：`用户名_导出当天年月日.xlsx`，例如 `jia_yangdong_20260925.xlsx`。
  *
- * 日期固定取【执行导出的当天】，不随筛选范围变化 ——
- * 文件名标记的是「这批数据是什么时候导的」，数据范围在面板上单独显示。
+ * 日期固定取【执行导出的当天】，标记的是「这批数据是什么时候导的」。
  * 非法文件名字符（\ / : * ? " < > |）替换成下划线。
  */
 function buildFileName(username: string): string {
   const base = (username || '店小秘').replace(/[\\/:*?"<>|]/g, '_').trim() || '店小秘';
   return `${base}_${ymd(startOfDay())}.xlsx`;
+}
+
+// ============================ 面单下载 ============================
+
+/** 面单文件名：`用户名_当天年月日_面单.pdf`（和 Excel 同账号同日期，方便配对） */
+function buildLabelFileName(username: string): string {
+  const base = (username || '店小秘').replace(/[\\/:*?"<>|]/g, '_').trim() || '店小秘';
+  return `${base}_${ymd(startOfDay())}_面单.pdf`;
+}
+
+/** background 回传的面单 PDF */
+interface PdfResp {
+  ok: boolean;
+  url?: string;
+  base64?: string;
+  mime?: string;
+  error?: string;
+}
+
+function isVisible(el: Element): boolean {
+  const r = el.getBoundingClientRect();
+  if (r.width <= 0 || r.height <= 0) return false;
+  const st = getComputedStyle(el);
+  return st.display !== 'none' && st.visibility !== 'hidden';
+}
+
+/** 页面上文本正好等于 `text` 且可见的元素，按可信度排序 */
+function visibleByText(text: string): HTMLElement[] {
+  const sel = 'a, button, .ant-btn, li, .ant-dropdown-menu-item, span, div';
+  const found = Array.from(document.querySelectorAll<HTMLElement>(sel)).filter(
+    (el) => el.textContent?.trim() === text && isVisible(el),
+  );
+  // 下拉菜单是 portal（挂在 body 末尾），但结构里未必带 .ant-dropdown 类，
+  // 所以按「在菜单里 > 不在表格行里 > 其它」排序，保证不会先点到行内同名链接。
+  const inMenu = found.filter((el) =>
+    el.closest('.ant-dropdown, .ant-dropdown-menu, [class*="dropdown"], [class*="popover"]'),
+  );
+  const outsideTable = found.filter((el) => !el.closest('tbody') && !inMenu.includes(el));
+  const rest = found.filter((el) => !inMenu.includes(el) && !outsideTable.includes(el));
+  return [...inMenu, ...outsideTable, ...rest];
+}
+
+/**
+ * 打开面单入口，按真实流程：**点「批量打印」→ 点菜单里的「打印面单」**。
+ * 菜单已经展开时直接点那一项；连批量菜单都没有时，退回页面上直接写着
+ * 「打印面单」的入口（每行操作列里那个）。
+ *
+ * 返回是否点到了东西。
+ */
+async function clickPrintEntry(): Promise<boolean> {
+  // 菜单/工具栏上的那个（**不碰行内链接**，行内是兜底）
+  const menuHit = (): HTMLElement | null =>
+    visibleByText('打印面单').find((el) => !el.closest('tbody')) ?? null;
+
+  // 1) 菜单已经展开 → 直接点
+  const direct = menuHit();
+  if (direct) {
+    direct.click();
+    return true;
+  }
+
+  // 2) 点「批量打印」把菜单展开。
+  //    触发器是 `<button class="ant-btn ant-btn-primary ant-dropdown-trigger">`，
+  //    antd 下拉可能是 hover 触发，所以 hover 事件和 click 都发；
+  //    菜单可能晚一帧才挂出来，循环等，但**只 click 一次**（重复 click 会把它点关）。
+  const isTrigger = (t: string): boolean => t === '批量打印' || (t.startsWith('批量打印') && t.length <= 12);
+  const findTrigger = (sel: string): HTMLElement | undefined =>
+    Array.from(document.querySelectorAll<HTMLElement>(sel))
+      .filter((el) => isVisible(el))
+      .map((el) => ({ el, t: (el.textContent ?? '').replace(/\s+/g, ' ').trim() }))
+      .find(({ t }) => isTrigger(t))?.el;
+  const trigger =
+    findTrigger('a, button, .ant-btn') ?? findTrigger('.ant-dropdown-trigger') ?? findTrigger('span');
+
+  if (trigger) {
+    const hover = () => {
+      for (const type of ['mouseenter', 'mouseover'] as const) {
+        trigger.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+      }
+    };
+    hover();
+    trigger.click();
+    for (let i = 0; i < 5; i++) {
+      const item = menuHit();
+      if (item) {
+        item.click();
+        return true;
+      }
+      hover();
+      await sleep(500);
+    }
+  }
+
+  // 3) 兜底：菜单没出来，直接点行内那个「打印面单」
+  //    （打印管理弹窗按「勾选数量」出单，所以勾了全部时效果一样）
+  const fallback = visibleByText('打印面单')[0];
+  if (fallback) {
+    fallback.click();
+    return true;
+  }
+  return false;
+}
+
+/**
+ * 勾选当页全部订单 —— 打印管理弹窗打的是「勾选的那批」，不勾就是空的/只有当前行。
+ * 返回还原函数，把复选框恢复成点之前的样子（用户可能自己选了几行）。
+ */
+async function selectAllOrders(bodyTable: HTMLTableElement): Promise<() => void> {
+  const scope = bodyTable.closest('.vxe-table') ?? bodyTable.parentElement ?? document.body;
+  const collect = (): HTMLInputElement[] =>
+    Array.from(scope.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'));
+  const boxes = collect();
+  if (boxes.length < 2) return () => undefined; // 没有行级复选框，谈不上全选
+
+  const before = boxes.slice(1).map((b) => b.checked);
+  if (before.every(Boolean)) return () => undefined; // 本来就全选，别动
+
+  const allBox = boxes[0];
+  if (allBox && !allBox.checked) allBox.click();
+  await sleep(600);
+
+  // 兜底：表头全选没生效就逐行点（点多少算多少，至少别是空的）
+  for (const b of collect().slice(1)) if (!b.checked) b.click();
+
+  return () => {
+    const now = collect().slice(1);
+    if (now.length !== before.length) return; // 行数变了，硬还原可能点错行
+    if (before.every((v) => !v)) {
+      // 原本一行都没勾 → 点一下表头全选清空，比逐行点快
+      const all = collect()[0];
+      if (all?.checked) {
+        all.click();
+        return;
+      }
+    }
+    now.forEach((b, i) => {
+      if (b.checked !== before[i]) b.click();
+    });
+  };
+}
+
+/** 「打印管理」弹窗：.ant-modal-content，标题写死是「打印管理」 */
+function findPrintModal(): HTMLElement | null {
+  return (
+    Array.from(document.querySelectorAll<HTMLElement>('.ant-modal-content')).find(
+      (m) =>
+        isVisible(m) &&
+        (m.querySelector('.ant-modal-title')?.textContent ?? '')
+          .replace(/\s+/g, '')
+          .includes('打印管理'),
+    ) ?? null
+  );
+}
+
+async function waitPrintModal(timeoutMs = 10000): Promise<HTMLElement | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const m = findPrintModal();
+    if (m) return m;
+    await sleep(200);
+  }
+  return null;
+}
+
+/** 弹窗里那句「当前选中 N 条数据」—— 确认确实勾到了东西。读不到返回 -1（不武断判 0） */
+function readSelectedCount(modal: HTMLElement): number {
+  const txt = (modal.querySelector('.ant-modal-body')?.textContent ?? '').replace(/\s+/g, '');
+  const m = /当前选中(\d+)条/.exec(txt);
+  return m ? Number(m[1]) : -1;
+}
+
+/**
+ * 打印方式三档，必须保证落在第一档「PDF生成打印 (仅打印选中 [当前页])」：
+ * 只有它把当页勾选的订单合成**一个 PDF**；
+ * 第二档要打印驱动，第三档每包一个文件（会变成 N 个 PDF）。
+ */
+function ensurePdfCombineMode(modal: HTMLElement): boolean {
+  const radios = Array.from(modal.querySelectorAll<HTMLInputElement>('input[type="radio"]'));
+  const target = radios.find((r) => (r.closest('label')?.textContent ?? '').includes('PDF生成打印'));
+  if (!target) return false;
+  if (!target.checked) (target.closest('label') ?? target).click();
+  return true;
+}
+
+function findStartPrintBtn(modal?: HTMLElement | null): HTMLElement | null {
+  const norm = (s: string | null | undefined): string => (s ?? '').replace(/\s+/g, '');
+  const scopes: Element[] = modal
+    ? [modal]
+    : Array.from(
+        document.querySelectorAll<HTMLElement>('.ant-modal, .ant-drawer, .el-dialog, [role="dialog"]'),
+      );
+  for (const scope of scopes) {
+    for (const el of scope.querySelectorAll<HTMLElement>('button, .ant-btn, a, span, div')) {
+      if (norm(el.textContent) === '开始打印' && isVisible(el)) return el;
+    }
+  }
+  // 兜底：结构不认识时按按钮级元素全页找
+  for (const el of document.querySelectorAll<HTMLElement>('button, a')) {
+    if (norm(el.textContent) === '开始打印' && isVisible(el)) return el;
+  }
+  return null;
+}
+
+/** 等「开始打印」按钮出现（只在打印管理弹窗里找） */
+async function waitStartPrintBtn(modal: HTMLElement, timeoutMs = 10000): Promise<HTMLElement | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const btn = findStartPrintBtn(modal);
+    if (btn) return btn;
+    await sleep(200);
+  }
+  return null;
+}
+
+/** 关掉打印管理弹窗：先点「取消」，再退右上角 ×，最后发一次 ESC */
+function closePrintDialog(): void {
+  const norm = (s: string | null | undefined): string => (s ?? '').replace(/\s+/g, '');
+  const modal = findPrintModal();
+  const cancel = modal
+    ? Array.from(modal.querySelectorAll<HTMLElement>('button')).find(
+        (b) => norm(b.textContent) === '取消' && isVisible(b),
+      )
+    : null;
+  if (cancel) {
+    cancel.click();
+    return;
+  }
+  const close =
+    modal?.querySelector<HTMLElement>('.ant-modal-close') ??
+    Array.from(document.querySelectorAll<HTMLElement>('.ant-modal-close, .ant-drawer-close')).find(
+      isVisible,
+    ) ??
+    null;
+  if (close) {
+    close.click();
+    return;
+  }
+  document.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }),
+  );
+}
+
+/**
+ * 下载当页全部订单的面单（**一个** PDF，含所有勾选订单）。真实流程：
+ *   勾选全部 → 点「批量打印」→ 点菜单里的「打印面单」→ 弹出「打印管理」
+ *   → 确认打印方式 = 「PDF生成打印（仅打印选中 [当前页]）」→ 点「开始打印」
+ *   → window.open 出 .pdf → background 抓下来 → 存 `账号_日期_面单.pdf`
+ *   → 关弹窗 → 还原勾选。
+ *
+ * 为什么放在导出最前面：`window.open` 要点按钮后约 5s 内的用户激活，
+ * 滚动列表 + 下载几十张商品图会把窗口耗光，放后面会被浏览器拦掉。
+ */
+async function downloadLabels(
+  bodyTable: HTMLTableElement,
+  username: string,
+): Promise<{ ok: true; file: string } | { ok: false; error: string }> {
+  const restore = await selectAllOrders(bodyTable);
+  // 先让 background 开始等地址，再去点入口 —— PDF 地址可能几百毫秒就抛出来
+  const waiter = browser.runtime.sendMessage({ type: 'DXM_AWAIT_PDF', timeout: 30000 }) as Promise<PdfResp>;
+  const cancelWait = () => void browser.runtime.sendMessage({ type: 'DXM_CANCEL_PDF' });
+  try {
+    if (!(await clickPrintEntry())) {
+      cancelWait();
+      return { ok: false, error: '没找到「批量打印 → 打印面单」入口' };
+    }
+    const modal = await waitPrintModal(10000);
+    if (!modal) {
+      cancelWait();
+      return { ok: false, error: '没弹出「打印管理」弹窗' };
+    }
+
+    const n = readSelectedCount(modal);
+    if (n === 0) {
+      cancelWait();
+      closePrintDialog();
+      return { ok: false, error: '弹窗显示「当前选中 0 条数据」，没勾到订单' };
+    }
+    ensurePdfCombineMode(modal);
+    console.log('[店小秘导出] 打印管理：选中', n, '条；打印方式已设为「PDF生成打印」');
+
+    const btn = await waitStartPrintBtn(modal, 10000);
+    if (!btn) {
+      cancelWait();
+      closePrintDialog();
+      return { ok: false, error: '弹窗里没找到「开始打印」按钮' };
+    }
+    btn.click();
+
+    const resp = await waiter;
+    if (!resp || !resp.ok || !resp.base64) {
+      return { ok: false, error: resp?.error ?? '面单 PDF 下载失败' };
+    }
+    const bytes = base64ToBytes(resp.base64);
+    const file = buildLabelFileName(username);
+    downloadBlob(new Blob([bytes.buffer as ArrayBuffer], { type: resp.mime || 'application/pdf' }), file);
+    closePrintDialog();
+    return { ok: true, file };
+  } finally {
+    restore();
+  }
 }
 
 // ============================ 面板 UI（Shadow DOM 隔离样式） ============================
@@ -1078,10 +1562,6 @@ function buildPanel(): HTMLElement {
     .bd { padding: 12px; font-size: 12px; color: #333; }
     .row { margin-bottom: 10px; }
     .lbl { display: block; margin-bottom: 4px; color: #666; }
-    .opts { display: flex; gap: 6px; }
-    .opt { flex: 1; text-align: center; padding: 6px 0; border: 1px solid #d8d8d8; border-radius: 6px;
-           cursor: pointer; user-select: none; }
-    .opt.on { border-color: #2b6cff; background: #eef3ff; color: #2b6cff; font-weight: 600; }
     input.un { width: 100%; padding: 6px 8px; border: 1px solid #d8d8d8; border-radius: 6px; font-size: 12px; }
     .unbox { display: flex; align-items: center; gap: 6px; }
     .uname { flex: 1; min-width: 0; padding: 5px 8px; border: 1px dashed #dfe3ea; border-radius: 6px;
@@ -1091,7 +1571,6 @@ function buildPanel(): HTMLElement {
     .uedit { flex: none; font-size: 11px; color: #2b6cff; cursor: pointer; text-decoration: underline; }
     .fname { margin-top: 6px; font-size: 11px; color: #5b6b85; word-break: break-all; }
     .fname b { color: #2b3a55; }
-    .fname i { font-style: normal; color: #8b98ad; }
     .fname.err { color: #e54545; }
     .btn { width: 100%; padding: 9px 0; border: none; border-radius: 6px; background: #2b6cff; color: #fff;
            font-size: 13px; font-weight: 600; cursor: pointer; }
@@ -1108,14 +1587,6 @@ function buildPanel(): HTMLElement {
     <div class="hd"><span>${CONFIG.panelTitle}</span><span class="x" title="收起面板">✕</span></div>
     <div class="bd">
       <div class="row">
-        <span class="lbl">日期范围（按发货时间）</span>
-        <div class="opts" id="opts">
-          <div class="opt on" data-r="today">当天</div>
-          <div class="opt" data-r="2d">近两天</div>
-          <div class="opt" data-r="3d">近三天</div>
-        </div>
-      </div>
-      <div class="row">
         <span class="lbl">登录账号（自动识别）</span>
         <div class="unbox">
           <span class="uname" id="uname">识别中…</span>
@@ -1124,7 +1595,7 @@ function buildPanel(): HTMLElement {
         <input class="un" id="un" placeholder="请输入店小秘账号名" style="display:none" />
         <div class="fname" id="fname"></div>
       </div>
-      <button class="btn" id="exp">导出 Excel</button>
+      <button class="btn" id="exp">导出Excel 和面单</button>
       <div class="tip" id="tip">正在扫描页面…</div>
       <span class="rescan" id="rescan">重新扫描</span>
     </div>
@@ -1155,13 +1626,12 @@ export default defineContentScript({
     const ueditEl = shadow.getElementById('uedit') as HTMLElement;
     const fnameEl = shadow.getElementById('fname') as HTMLElement;
     const expBtn = shadow.getElementById('exp') as HTMLButtonElement;
-    const opts = shadow.getElementById('opts') as HTMLElement;
     const rescanBtn = shadow.getElementById('rescan') as HTMLElement;
     const boxEl = shadow.querySelector('.box') as HTMLElement;
 
     /**
      * 面板显示/收起只切显示，不删节点 ——
-     * 选的日期范围、识别到的账号、手填的名字全部保留，重新展开就是原样。
+     * 识别到的账号、手填的名字全部保留，重新展开就是原样。
      * 收起靠面板右上角的 ✕；重新展开靠工具栏弹窗里的按钮或刷新页面。
      */
     function isPanelVisible(): boolean {
@@ -1180,7 +1650,6 @@ export default defineContentScript({
       return next;
     }
 
-    let currentRange: 'today' | '2d' | '3d' = 'today';
     // 注意：detectedUsername / detectedSource / detectedStrong
     // 都是**模块级**变量（见 buildUsernameReport 附近），这里刻意不重复声明 ——
     // 否则局部变量会遮蔽它们，诊断报告里永远是空值。
@@ -1259,10 +1728,6 @@ export default defineContentScript({
       const b = document.createElement('b');
       b.textContent = buildFileName(name);
       fnameEl.appendChild(b);
-      // 日期固定是「导出当天」，所以数据范围不会再体现在文件名里，这里单独标出来
-      const r = document.createElement('i');
-      r.textContent = `（数据范围：${rangeLabel(currentRange)}）`;
-      fnameEl.appendChild(r);
     }
 
     /** 自动识别登录账号（用户手动改过就不覆盖） */
@@ -1335,15 +1800,6 @@ export default defineContentScript({
     unInput.addEventListener('input', () => {
       usernameEdited = !!unInput.value.trim();
       updateFilePreview();
-    });
-
-    opts.querySelectorAll('.opt').forEach((el) => {
-      el.addEventListener('click', () => {
-        opts.querySelectorAll('.opt').forEach((o) => o.classList.remove('on'));
-        el.classList.add('on');
-        currentRange = (el.getAttribute('data-r') as 'today' | '2d' | '3d') ?? 'today';
-        updateFilePreview();
-      });
     });
 
     refreshUsername();
@@ -1430,8 +1886,14 @@ export default defineContentScript({
           tip.classList.add('err');
           tip.textContent = `已读 ${rows.length} 行，但未匹配到列：${missing.join('、')}。表头：${headerMap.headers.join(' / ')}`;
         } else {
+          const pending = countPendingImages(bodyTable);
           tip.classList.remove('err');
-          tip.textContent = `已就绪，读到 ${rows.length} 个订单。导出前请上下滚动列表让商品图加载完；「材质」列本页无数据，留空。`;
+          tip.textContent =
+            `已就绪，读到 ${rows.length} 个订单。` +
+            (pending
+              ? `还有 ${pending} 张商品图未就绪（点「导出」会自动滚动列表并等它们加载完）。`
+              : '') +
+            '「材质」列本页无数据，统一填「水洗底」。';
         }
       } catch (e) {
         tip.classList.add('err');
@@ -1453,36 +1915,12 @@ export default defineContentScript({
         expBtn.disabled = false;
       };
       try {
-        const rowMaps = readRows(bodyTableRef, headerMap);
-        // 多商品订单会拆成多行（每个商品一行）
-        const rows = rowMaps.flatMap(toRecords);
+        // 先读一次行：确认有数据、并留出「账号名待确认」的中止机会
+        let rows = readRows(bodyTableRef, headerMap).flatMap(toRecords);
         if (rows.length === 0) {
           restore();
           tip.classList.add('err');
           tip.textContent = '没有可导出的数据行。';
-          return;
-        }
-        // 按发货时间筛选
-        const start = rangeStart(currentRange);
-        const filtered = rows.filter((r) => {
-          const d = parseDate(r.__date);
-          return d != null && d >= start;
-        });
-        const dropped = rows.length - filtered.length;
-        if (filtered.length === 0) {
-          restore();
-          tip.classList.add('err');
-          // 显示「时间」列原始文本（诊断真实格式），而不是只显示解析结果
-          const rawSamples = rows
-            .slice(0, 3)
-            .map((r) => `"${(r.__dateRaw || '').slice(0, 40) || '(空)'}"`)
-            .join('、');
-          console.log('[店小秘导出] 前3行 时间列原文 =', rows.slice(0, 3).map((r) => r.__dateRaw));
-          console.log(
-            '[店小秘导出] 第1行整行文本 =',
-            Array.from(rowMaps[0]?.values() ?? []).map((e) => (e.textContent ?? '').trim().slice(0, 30)),
-          );
-          tip.textContent = `读到 ${rows.length} 行，但按「${rangeLabel(currentRange)}」过滤后为 0 行。时间列原文：${rawSamples}`;
           return;
         }
         tip.classList.remove('err');
@@ -1503,20 +1941,69 @@ export default defineContentScript({
           tip.classList.add('err');
           tip.textContent = currentUsername()
             ? `账号名是从「${sourceLabel(detectedSource)}」推断的，未必是登录账号。请核对上方，无误就点「完成」再导出；不对就直接改成正确账号名。`
-            : '未能自动识别账号名。已在上方展开输入框，填一次即可（会记住）；填完再点「导出 Excel」。';
+            : '未能自动识别账号名。已在上方展开输入框，填一次即可（会记住）；填完再点「导出Excel 和面单」。';
           console.log('[店小秘导出] 账号名待确认，诊断报告 =', buildUsernameReport());
           return;
         }
-        const filename = buildFileName(currentUsername());
-        const imgCount = new Set(filtered.map((r) => r.图片).filter(Boolean)).size;
-        tip.textContent = `命中「${rangeLabel(currentRange)}」${filtered.length} 行${dropped ? `（已过滤 ${dropped} 行）` : ''}，正在下载图片 0/${imgCount}…`;
 
-        await exportToExcel(filtered, filename, (done, total) => {
-          tip.textContent = `命中 ${filtered.length} 行，正在下载高清图 ${done}/${total}…`;
+        // ---- 面单（必须放在最前面）----
+        // 「开始打印」会 window.open 一个 PDF，而 window.open 要求用户点按钮后 ~5s 内的
+        // 激活态；滚动列表 + 下载几十张商品图会把这个窗口耗光，放后面就会被浏览器拦掉。
+        // 面单失败不阻断 Excel：继续导，只是最后的提示会标红并写明原因。
+        let labelNote = '';
+        let labelFailed = false;
+        tip.textContent = '正在生成面单（当页全部订单）…';
+        try {
+          const lr = await downloadLabels(bodyTableRef, currentUsername());
+          if (lr.ok) {
+            labelNote = `；面单 ${lr.file}`;
+            console.log('[店小秘导出] 面单已下载:', lr.file);
+          } else {
+            labelFailed = true;
+            labelNote = `；面单下载失败：${lr.error}`;
+            console.warn('[店小秘导出] 面单下载失败:', lr.error);
+          }
+        } catch (e) {
+          labelFailed = true;
+          const msg = e instanceof Error ? e.message : String(e);
+          labelNote = `；面单下载失败：${msg}`;
+          console.warn('[店小秘导出] 面单下载异常:', msg);
+        }
+
+        // 懒加载图片：没进过视口的行，DOM 里只有 1×1 占位图、真实地址根本不在 ——
+        // 不滚一遍就导出，那些行必然没有图片。这里自动滚一遍（最后会滚回原位）再重读。
+        const pendingBefore = countPendingImages(bodyTableRef);
+        if (pendingBefore > 0) {
+          tip.textContent = `有 ${pendingBefore} 张商品图未就绪，正在滚动列表并等待加载…`;
+          const left = await ensureImagesLoaded(bodyTableRef);
+          if (left > 0) {
+            console.warn(
+              `[店小秘导出] 滚动后仍有 ${left} 张图未加载（页面自身也没加载出来），对应行导出后没有图片`,
+            );
+          }
+          // 图片 src 变了，必须重新读一次行（防页面刚好在重渲染，读空就还用原来这份）
+          const refreshed = readRows(bodyTableRef, headerMap).flatMap(toRecords);
+          if (refreshed.length > 0) rows = refreshed;
+        }
+
+        const filename = buildFileName(currentUsername());
+        const imgCount = new Set(rows.map((r) => r.图片).filter(Boolean)).size;
+        tip.textContent = `导出 ${rows.length} 行，正在下载图片 0/${imgCount}…`;
+
+        const st = await exportToExcel(rows, filename, (done, total) => {
+          tip.textContent = `导出 ${rows.length} 行，正在下载高清图 ${done}/${total}…`;
         });
 
-        console.log('[店小秘导出] 导出完成，文件名 =', filename, '；账号 =', currentUsername());
-        tip.textContent = `导出成功：${filename}（${filtered.length} 行，含 ${imgCount} 张高清图）`;
+        console.log('[店小秘导出] 导出完成，文件名 =', filename, '；账号 =', currentUsername(), '；统计 =', st);
+        const parts = [`${st.rows} 行`];
+        if (st.withImage) parts.push(`${st.withImage} 行含图`);
+        if (st.noUrl) parts.push(`${st.noUrl} 行取不到图片地址`);
+        if (st.failed) parts.push(`${st.failed} 张图片下载失败`);
+        const partial = st.noUrl > 0 || st.failed > 0 || labelFailed;
+        tip.classList.toggle('err', partial);
+        tip.textContent =
+          `导出成功：${filename}（${parts.join('，')}）${labelNote}` +
+          (partial ? '。详情按 F12 看控制台' : '');
         // 记住这次用的用户名，下次页面探测不到也能直接用
         void saveUsername(currentUsername());
         restore();

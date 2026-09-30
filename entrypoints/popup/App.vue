@@ -64,9 +64,8 @@ async function toggle() {
     <ol>
       <li>打开 <b>店小秘</b> 并进入「<b>发货成功列表</b>」页面。</li>
       <li>页面右下角会出现蓝色悬浮面板。</li>
-      <li>选择日期范围：<b>当天 / 近两天 / 近三天</b>。</li>
       <li>确认「导出文件名」为当前登录账号用户名（可手动修改）。</li>
-      <li>点击「<b>导出 Excel</b>」，文件将以<b>用户名.xlsx</b> 下载。</li>
+      <li>点击「<b>导出Excel 和面单</b>」：先下当页全部订单的面单（<b>用户名_日期_面单.pdf</b>），再自动滚动列表加载商品图，导出 <b>用户名_日期.xlsx</b>。</li>
     </ol>
 
     <button class="open" id="panel-toggle" :disabled="busy || visible === null" @click="toggle">
@@ -74,7 +73,7 @@ async function toggle() {
     </button>
     <p v-if="hint" class="hint">{{ hint }}</p>
 
-    <p class="note">导出字段：图片 / 尺寸 / 件数 / 材质 / 运单号。</p>
+    <p class="note">导出字段：图片 / 尺寸(CM) / 件数 / 材质 / 运单号（材质默认「水洗底」）。</p>
   </div>
 </template>
 

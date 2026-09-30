@@ -1,8 +1,8 @@
 {
   "name": "dianxiaomi-shipping-export",
-  "description": "店小秘发货成功列表导出插件：按日期范围导出为 Excel",
+  "description": "店小秘发货成功列表导出插件：导出 Excel 与批量面单 PDF",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "wxt build -m development && node scripts/check-build.mjs",

@@ -101,6 +101,8 @@ const DL_TIMEOUT = Number(process.env.DL_TIMEOUT || 30000);
         // 面板上所有可见文案（用来核对界面没有多余文案 / 标记）
         allText: box ? (box.textContent || '').replace(/\s+/g, ' ').trim() : '(no box)',
         labels: sr ? Array.from(sr.querySelectorAll('.lbl')).map((e) => e.textContent.trim()) : [],
+        // 日期范围选择器已移除（导出的是列表全部数据，不按发货时间筛选）
+        noDateRangeUI: sr ? !sr.getElementById('opts') && !sr.querySelector('.opt') : false,
         uname: t('uname'),
         unameSource: un ? un.title : '',
         hiddenInput: inp ? inp.value : '(no input)',
@@ -113,15 +115,9 @@ const DL_TIMEOUT = Number(process.env.DL_TIMEOUT || 30000);
   const results = [];
   results.push(await snap('① 页面加载后'));
 
-  // 选「近三天」，保证数据落在筛选窗口内
-  await page.evaluate(() => {
-    const sr = document.getElementById('__dxm_export_panel').shadowRoot;
-    sr.querySelectorAll('.opt').forEach((o) => {
-      if (o.getAttribute('data-r') === '3d') o.click();
-    });
-  });
+  // ② 日期范围选择器已移除（导出的是列表全部数据，不再按发货时间筛选）
   await page.waitForTimeout(400);
-  results.push(await snap('② 选择近三天后'));
+  results.push(await snap('② 无日期范围选择器'));
 
   // ③ 圆形开关已移除：✕ 只做「收起」（面板不消失），页面内不再有开关按钮
   results.push({
